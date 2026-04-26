@@ -1,4 +1,5 @@
 from pathlib import Path
+from difflib import get_close_matches
 
 import pandas as pd
 from flask import Flask, render_template_string, request
@@ -67,6 +68,10 @@ HTML_TEMPLATE = """
             grid-template-columns: 1fr auto;
             gap: 12px;
             margin-bottom: 24px;
+            align-items: start;
+        }
+        .search-wrap {
+            position: relative;
         }
         input[type="text"] {
             width: 100%;
@@ -75,6 +80,42 @@ HTML_TEMPLATE = """
             border-radius: 8px;
             font-size: 1rem;
             background: #fff;
+        }
+        .suggestions {
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 0;
+            right: 0;
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            box-shadow: 0 16px 32px rgba(31, 41, 51, 0.12);
+            max-height: 220px;
+            overflow-y: auto;
+            display: none;
+            z-index: 10;
+        }
+        .suggestions.visible {
+            display: block;
+        }
+        .suggestion-item {
+            width: 100%;
+            border: 0;
+            border-bottom: 1px solid #f1e7dc;
+            background: #fff;
+            color: var(--ink);
+            text-align: left;
+            padding: 12px 14px;
+            font-size: 0.98rem;
+            cursor: pointer;
+        }
+        .suggestion-item:last-child {
+            border-bottom: 0;
+        }
+        .suggestion-item:hover,
+        .suggestion-item.active {
+            background: #fff3e8;
+            color: var(--accent-dark);
         }
         button {
             border: 0;
@@ -145,14 +186,18 @@ HTML_TEMPLATE = """
         <p>Enter a song title and get the five most similar songs from your KNN model.</p>
 
         <form method="post">
-            <input
-                type="text"
-                name="song_name"
-                placeholder="Try: Aperture"
-                value="{{ query }}"
-                autocomplete="off"
-                required
-            >
+            <div class="search-wrap">
+                <input
+                    id="song_name"
+                    type="text"
+                    name="song_name"
+                    placeholder="Try: Aperture"
+                    value="{{ query }}"
+                    autocomplete="off"
+                    required
+                >
+                <div id="suggestions" class="suggestions"></div>
+            </div>
             <button type="submit">Search</button>
         </form>
 
@@ -181,6 +226,111 @@ HTML_TEMPLATE = """
             </section>
         {% endif %}
     </main>
+    <script>
+        const songTitles = {{ song_titles|tojson }};
+        const input = document.getElementById("song_name");
+        const suggestions = document.getElementById("suggestions");
+        let activeIndex = -1;
+        let visibleMatches = [];
+
+        function closeSuggestions() {
+            suggestions.classList.remove("visible");
+            suggestions.innerHTML = "";
+            activeIndex = -1;
+            visibleMatches = [];
+        }
+
+        function selectSuggestion(title) {
+            input.value = title;
+            closeSuggestions();
+            input.focus();
+        }
+
+        function renderSuggestions(matches) {
+            visibleMatches = matches;
+            activeIndex = -1;
+
+            if (!matches.length) {
+                closeSuggestions();
+                return;
+            }
+
+            suggestions.innerHTML = matches.map((title) =>
+                `<button type="button" class="suggestion-item">${title}</button>`
+            ).join("");
+
+            suggestions.classList.add("visible");
+
+            suggestions.querySelectorAll(".suggestion-item").forEach((item, index) => {
+                item.addEventListener("mousedown", (event) => {
+                    event.preventDefault();
+                    selectSuggestion(matches[index]);
+                });
+            });
+        }
+
+        function updateActiveItem() {
+            const items = suggestions.querySelectorAll(".suggestion-item");
+            items.forEach((item, index) => {
+                item.classList.toggle("active", index === activeIndex);
+            });
+
+            if (activeIndex >= 0 && items[activeIndex]) {
+                items[activeIndex].scrollIntoView({ block: "nearest" });
+            }
+        }
+
+        input.addEventListener("input", () => {
+            const query = input.value.trim().toLowerCase();
+            if (!query) {
+                closeSuggestions();
+                return;
+            }
+
+            const matches = songTitles
+                .filter((title) => title.toLowerCase().includes(query))
+                .slice(0, 12);
+
+            renderSuggestions(matches);
+        });
+
+        input.addEventListener("focus", () => {
+            if (input.value.trim()) {
+                const query = input.value.trim().toLowerCase();
+                const matches = songTitles
+                    .filter((title) => title.toLowerCase().includes(query))
+                    .slice(0, 12);
+                renderSuggestions(matches);
+            }
+        });
+
+        input.addEventListener("keydown", (event) => {
+            if (!visibleMatches.length) {
+                return;
+            }
+
+            if (event.key === "ArrowDown") {
+                event.preventDefault();
+                activeIndex = (activeIndex + 1) % visibleMatches.length;
+                updateActiveItem();
+            } else if (event.key === "ArrowUp") {
+                event.preventDefault();
+                activeIndex = (activeIndex - 1 + visibleMatches.length) % visibleMatches.length;
+                updateActiveItem();
+            } else if (event.key === "Enter" && activeIndex >= 0) {
+                event.preventDefault();
+                selectSuggestion(visibleMatches[activeIndex]);
+            } else if (event.key === "Escape") {
+                closeSuggestions();
+            }
+        });
+
+        document.addEventListener("click", (event) => {
+            if (!event.target.closest(".search-wrap")) {
+                closeSuggestions();
+            }
+        });
+    </script>
 </body>
 </html>
 """
@@ -197,6 +347,28 @@ X_scaled = scaler.fit_transform(dfclean)
 
 model = NearestNeighbors(n_neighbors=10, metric="cosine")
 model.fit(X_scaled)
+
+track_names = df["track"].dropna().tolist()
+track_names_lower = [track.lower() for track in track_names]
+
+
+def resolve_track_name(track_name):
+    matches = df[(df["track"].str.lower() == track_name.lower())]
+    if not matches.empty:
+        return track_name, None
+
+    partial_matches = df[df["track"].str.lower().str.contains(track_name.lower(), na=False)]
+    if not partial_matches.empty:
+        matched_track = partial_matches.iloc[0]["track"]
+        return matched_track, f'No exact match found. Showing results for "{matched_track}".'
+
+    close_matches = get_close_matches(track_name.lower(), track_names_lower, n=1, cutoff=0.6)
+    if close_matches:
+        matched_lower = close_matches[0]
+        matched_track = track_names[track_names_lower.index(matched_lower)]
+        return matched_track, f'No exact match found. Showing results for "{matched_track}".'
+
+    return None, None
 
 
 def recommend(track_name, k=10):
@@ -250,11 +422,12 @@ def index():
         if not query:
             error = "Please enter a song title."
         else:
-            recommended_songs, similarity_score = recommend(query)
-            if recommended_songs is None:
+            resolved_track, info = resolve_track_name(query)
+            if resolved_track is None:
                 error = "Track name not found. Try again."
             else:
-                selected_track = query
+                recommended_songs, similarity_score = recommend(resolved_track)
+                selected_track = resolved_track
                 results = recommended_songs[["artist", "track"]].head(5).to_dict(orient="records")
 
     return render_template_string(
@@ -265,6 +438,7 @@ def index():
         info=info,
         similarity_score=similarity_score,
         selected_track=selected_track,
+        song_titles=track_names,
     )
 
 
