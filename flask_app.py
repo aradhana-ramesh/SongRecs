@@ -227,7 +227,7 @@ HTML_TEMPLATE = """
         {% endif %}
     </main>
     <script>
-        const songTitles = {{ song_titles|tojson }};
+        const songOptions = {{ song_options|tojson }};
         const input = document.getElementById("song_name");
         const suggestions = document.getElementById("suggestions");
         let activeIndex = -1;
@@ -240,8 +240,8 @@ HTML_TEMPLATE = """
             visibleMatches = [];
         }
 
-        function selectSuggestion(title) {
-            input.value = title;
+        function selectSuggestion(song) {
+            input.value = song.track;
             closeSuggestions();
             input.focus();
         }
@@ -255,8 +255,8 @@ HTML_TEMPLATE = """
                 return;
             }
 
-            suggestions.innerHTML = matches.map((title) =>
-                `<button type="button" class="suggestion-item">${title}</button>`
+            suggestions.innerHTML = matches.map((song) =>
+                `<button type="button" class="suggestion-item">${song.track} - ${song.artist}</button>`
             ).join("");
 
             suggestions.classList.add("visible");
@@ -287,8 +287,12 @@ HTML_TEMPLATE = """
                 return;
             }
 
-            const matches = songTitles
-                .filter((title) => title.toLowerCase().includes(query))
+            const matches = songOptions
+                .filter((song) =>
+                    song.track.toLowerCase().includes(query) ||
+                    song.artist.toLowerCase().includes(query) ||
+                    `${song.track} - ${song.artist}`.toLowerCase().includes(query)
+                )
                 .slice(0, 12);
 
             renderSuggestions(matches);
@@ -297,8 +301,12 @@ HTML_TEMPLATE = """
         input.addEventListener("focus", () => {
             if (input.value.trim()) {
                 const query = input.value.trim().toLowerCase();
-                const matches = songTitles
-                    .filter((title) => title.toLowerCase().includes(query))
+                const matches = songOptions
+                    .filter((song) =>
+                        song.track.toLowerCase().includes(query) ||
+                        song.artist.toLowerCase().includes(query) ||
+                        `${song.track} - ${song.artist}`.toLowerCase().includes(query)
+                    )
                     .slice(0, 12);
                 renderSuggestions(matches);
             }
@@ -350,6 +358,12 @@ model.fit(X_scaled)
 
 track_names = df["track"].dropna().tolist()
 track_names_lower = [track.lower() for track in track_names]
+song_options = (
+    df[["artist", "track"]]
+    .dropna()
+    .drop_duplicates()
+    .to_dict(orient="records")
+)
 
 
 def resolve_track_name(track_name):
@@ -439,6 +453,7 @@ def index():
         similarity_score=similarity_score,
         selected_track=selected_track,
         song_titles=track_names,
+        song_options=song_options,
     )
 
 
